@@ -1,9 +1,6 @@
-plugins {
-    id "com.android.application"
-    id "kotlin-android"
-    // The Flutter Gradle Plugin must be applied after the Android plugin.
-    id "dev.flutter.flutter-plugin-loader"
-}
+apply plugin: "com.android.application"
+apply plugin: "kotlin-android"
+apply from: "$flutterSdkPath/packages/flutter_tools/gradle/flutter.gradle"
 
 android {
     compileSdkVersion 34
