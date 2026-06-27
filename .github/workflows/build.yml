@@ -33,13 +33,11 @@ jobs:
       - name: Verify Flutter
         run: flutter --version
 
-      # Create a guaranteed-valid Flutter project structure
       - name: Create fresh Flutter project
         run: |
           flutter create --org com.navassist --project-name nav_assist /tmp/fresh_project
           echo "Fresh project created"
 
-      # Copy our source code into the fresh project
       - name: Copy source code
         run: |
           cp -r lib/ /tmp/fresh_project/lib/
@@ -52,8 +50,6 @@ jobs:
           fi
           echo "Source copied"
 
-      # Write pubspec.yaml with pinned safe versions
-      # These versions are all confirmed compatible with Flutter 3.24 + SDK 34
       - name: Write safe pubspec.yaml
         run: |
           cat > /tmp/fresh_project/pubspec.yaml << 'PUBSPEC'
@@ -70,40 +66,17 @@ jobs:
             flutter:
               sdk: flutter
 
-            # USB Serial for Arduino OTG — pinned to last stable version
             usb_serial: 0.4.0
-
-            # HTTP for Gemini API
             http: 1.1.0
-
-            # Camera
             camera: 0.10.5+9
-
-            # Text to speech
             flutter_tts: 3.8.5
-
-            # CSV writing
             csv: 5.0.2
-
-            # File paths
             path_provider: 2.1.1
-
-            # Permissions
             permission_handler: 11.0.1
-
-            # Image utilities
             image: 4.1.3
-
-            # Base64 / encoding
             convert: 3.1.1
-
-            # Settings storage
             shared_preferences: 2.2.2
-
-            # Keep screen on
             wakelock_plus: 1.1.4
-
-            # package_info_plus pinned to 4.x — version 9 breaks SDK 34
             package_info_plus: 4.2.0
 
           dev_dependencies:
@@ -118,8 +91,6 @@ jobs:
           PUBSPEC
           echo "pubspec.yaml written"
 
-      # Write the Android app/build.gradle with explicit SDK versions
-      # This replaces the fresh project's build.gradle entirely
       - name: Write Android build.gradle
         run: |
           cat > /tmp/fresh_project/android/app/build.gradle << 'BUILDGRADLE'
@@ -167,7 +138,7 @@ jobs:
               defaultConfig {
                   applicationId "com.navassist.app"
                   minSdk 21
-                  compileSdk 35
+                  targetSdk 35
                   versionCode flutterVersionCode.toInteger()
                   versionName flutterVersionName
               }
@@ -181,13 +152,20 @@ jobs:
               }
           }
 
+          configurations.all {
+              resolutionStrategy {
+                  force "org.jetbrains.kotlin:kotlin-stdlib:1.9.23"
+                  force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.23"
+                  force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.23"
+              }
+          }
+
           flutter {
               source '../..'
           }
           BUILDGRADLE
           echo "build.gradle written"
 
-      # Write the root android/build.gradle with explicit versions
       - name: Write root build.gradle
         run: |
           cat > /tmp/fresh_project/android/build.gradle << 'ROOTGRADLE'
@@ -224,7 +202,6 @@ jobs:
           ROOTGRADLE
           echo "Root build.gradle written"
 
-      # Write gradle wrapper properties with a compatible Gradle version
       - name: Write gradle wrapper properties
         run: |
           mkdir -p /tmp/fresh_project/android/gradle/wrapper
@@ -237,7 +214,6 @@ jobs:
           GRADLEWRAPPER
           echo "Gradle wrapper written"
 
-      # Write AndroidManifest.xml with all required permissions
       - name: Write AndroidManifest.xml
         run: |
           cat > /tmp/fresh_project/android/app/src/main/AndroidManifest.xml << 'MANIFEST'
@@ -295,7 +271,6 @@ jobs:
           MANIFEST
           echo "AndroidManifest written"
 
-      # Write USB device filter
       - name: Write USB device filter
         run: |
           mkdir -p /tmp/fresh_project/android/app/src/main/res/xml
@@ -309,17 +284,14 @@ jobs:
           DEVICEFILTER
           echo "Device filter written"
 
-      # Get dependencies
       - name: Get dependencies
         working-directory: /tmp/fresh_project
         run: flutter pub get
 
-      # Build APK
       - name: Build APK
         working-directory: /tmp/fresh_project
         run: flutter build apk --release --no-tree-shake-icons
 
-      # Verify and upload
       - name: Verify APK exists
         run: |
           ls -lh /tmp/fresh_project/build/app/outputs/flutter-apk/
@@ -332,3 +304,4 @@ jobs:
           path: /tmp/fresh_project/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
           if-no-files-found: error
+        
