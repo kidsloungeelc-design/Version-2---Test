@@ -91,6 +91,34 @@ jobs:
           PUBSPEC
           echo "pubspec.yaml written"
 
+      - name: Write settings.gradle
+        run: |
+          cat > /tmp/fresh_project/android/settings.gradle << 'SETTINGSGRADLE'
+          pluginManagement {
+              def flutterSdkPath = {
+                  def properties = new Properties()
+                  file("local.properties").withInputStream { properties.load(it) }
+                  def flutterSdkPath = properties.getProperty("flutter.sdk")
+                  assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+                  return flutterSdkPath
+              }()
+              settings.ext.flutterSdkPath = flutterSdkPath
+              includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          plugins {
+              id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+              id "com.android.application" version "8.1.0" apply false
+              id "org.jetbrains.kotlin.android" version "1.9.23" apply false
+          }
+          include ":app"
+          SETTINGSGRADLE
+          echo "settings.gradle written"
+
       - name: Write Android build.gradle
         run: |
           cat > /tmp/fresh_project/android/app/build.gradle << 'BUILDGRADLE'
@@ -304,4 +332,3 @@ jobs:
           path: /tmp/fresh_project/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
           if-no-files-found: error
-        
