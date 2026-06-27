@@ -30,38 +30,137 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Verify Flutter version
-        run: |
-          flutter --version
-          dart --version
+      - name: Verify Flutter
+        run: flutter --version
 
-      - name: Clean any cached state
+      # Step 1: Create a brand new Flutter project in a temp folder
+      # This gives us a guaranteed valid Gradle/Android structure
+      - name: Create fresh Flutter project
         run: |
-          flutter clean
-          rm -f .flutter-plugins
-          rm -f .flutter-plugins-dependencies
+          flutter create --org com.navassist --project-name nav_assist /tmp/fresh_project
+          echo "Fresh project created successfully"
 
-      - name: Get Flutter dependencies
+      # Step 2: Copy our source code INTO the fresh project
+      # We keep the fresh Android folder, replace everything else with our code
+      - name: Copy our source code into fresh project
+        run: |
+          # Copy our Dart source files
+          cp -r lib/ /tmp/fresh_project/lib/
+
+          # Copy our pubspec.yaml
+          cp pubspec.yaml /tmp/fresh_project/pubspec.yaml
+
+          # Copy assets if they exist
+          if [ -d "assets" ]; then
+            cp -r assets/ /tmp/fresh_project/assets/
+          else
+            mkdir -p /tmp/fresh_project/assets/images
+            touch /tmp/fresh_project/assets/images/.gitkeep
+          fi
+
+          echo "Source files copied successfully"
+
+      # Step 3: Apply our AndroidManifest permissions and USB device filter
+      - name: Apply Android configuration
+        run: |
+          # Replace AndroidManifest.xml with our version (USB OTG + camera permissions)
+          cat > /tmp/fresh_project/android/app/src/main/AndroidManifest.xml << 'MANIFEST'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+              <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+              <uses-feature android:name="android.hardware.camera" android:required="true" />
+
+              <application
+                  android:label="NavAssist"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:requestLegacyExternalStorage="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                          android:resource="@xml/device_filter" />
+
+                  </activity>
+
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+
+              </application>
+          </manifest>
+          MANIFEST
+
+          # Create USB device filter XML
+          mkdir -p /tmp/fresh_project/android/app/src/main/res/xml
+          cat > /tmp/fresh_project/android/app/src/main/res/xml/device_filter.xml << 'DEVICEFILTER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <usb-device vendor-id="9025" />
+              <usb-device vendor-id="6790" />
+              <usb-device vendor-id="4292" />
+          </resources>
+          DEVICEFILTER
+
+          # Update build.gradle to set correct SDK versions
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/' \
+            /tmp/fresh_project/android/app/build.gradle
+          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/' \
+            /tmp/fresh_project/android/app/build.gradle
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' \
+            /tmp/fresh_project/android/app/build.gradle
+
+          echo "Android configuration applied"
+
+      # Step 4: Get dependencies in the fresh project
+      - name: Get dependencies
+        working-directory: /tmp/fresh_project
         run: flutter pub get
 
-      - name: Analyze (warnings only)
-        run: flutter analyze --no-fatal-infos || true
-
+      # Step 5: Build the APK
       - name: Build release APK
+        working-directory: /tmp/fresh_project
         run: |
-          flutter build apk --release \
-            --no-tree-shake-icons \
-            --target-platform android-arm,android-arm64
+          flutter build apk --release --no-tree-shake-icons
+          echo "Build complete"
 
-      - name: Verify APK exists
+      # Step 6: Verify and upload
+      - name: Verify APK
         run: |
-          ls -lh build/app/outputs/flutter-apk/
-          echo "APK size: $(du -sh build/app/outputs/flutter-apk/app-release.apk | cut -f1)"
+          ls -lh /tmp/fresh_project/build/app/outputs/flutter-apk/
+          echo "APK size: $(du -sh /tmp/fresh_project/build/app/outputs/flutter-apk/app-release.apk | cut -f1)"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: nav-assist-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: /tmp/fresh_project/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
           if-no-files-found: error
