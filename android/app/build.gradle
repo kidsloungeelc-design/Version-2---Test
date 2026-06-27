@@ -19,12 +19,12 @@ android {
     }
 
     defaultConfig {
-    applicationId "com.navassist.app"
-    minSdkVersion 21
-    targetSdkVersion 34
-    versionCode 1
-    versionName "1.0"
-}
+        applicationId "com.navassist.app"
+        minSdkVersion 21
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+    }
 
     buildTypes {
         release {
