@@ -149,7 +149,7 @@ jobs:
 
           android {
               namespace "com.navassist.nav_assist"
-              compileSdk 34
+              compileSdk 35
 
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_1_8
@@ -167,7 +167,7 @@ jobs:
               defaultConfig {
                   applicationId "com.navassist.app"
                   minSdk 21
-                  targetSdk 34
+                  compileSdk 35
                   versionCode flutterVersionCode.toInteger()
                   versionName flutterVersionName
               }
