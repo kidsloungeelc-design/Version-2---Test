@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import '../services/arduino_service.dart';
+import '../services/camera_service.dart';
 import '../config.dart';
 import 'navigation_screen.dart';
 import 'settings_screen.dart';
@@ -241,13 +242,3 @@ class _HomeScreenState extends State<HomeScreen> {
             Text(
               errorHint,
               style: const TextStyle(
-                fontSize: 14,
-                color: Colors.red,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
