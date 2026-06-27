@@ -242,3 +242,13 @@ class _HomeScreenState extends State<HomeScreen> {
             Text(
               errorHint,
               style: const TextStyle(
+                fontSize: 14,
+                color: Colors.red,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
