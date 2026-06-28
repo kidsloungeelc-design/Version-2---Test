@@ -90,10 +90,10 @@ class CameraService {
   }
 
   Map<String, dynamic> get stats => {
-    'success':          successCount,
-    'errors':           errorCount,
-    'skipped_overlap':  skippedOverlapCount,
-    'last_error':       lastError ?? '',
+    'success':         successCount,
+    'errors':          errorCount,
+    'skipped_overlap': skippedOverlapCount,
+    'last_error':      lastError ?? '',
   };
 
   Future<void> dispose() async {
