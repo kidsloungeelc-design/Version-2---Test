@@ -1,38 +1,50 @@
-/// Central configuration for the NavAssist app.
-/// API key and thresholds can be changed from the Settings screen
-/// and are persisted in SharedPreferences.
-
 class AppConfig {
-  // ── CHANGE THIS to your Gemini API key ──────────────────────────────────
-  // Get a free key at: https://aistudio.google.com
-  // Free tier: 1,500 requests/day — more than enough for this project
   static String geminiApiKey = 'YOUR_GEMINI_API_KEY_HERE';
-  // ────────────────────────────────────────────────────────────────────────
 
-  // Gemini API endpoint
   static const String geminiEndpoint =
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
   // Safety distances (cm)
-  static double criticalDistance = 40.0;   // STOP immediately — no AI
-  static double dangerDistance   = 80.0;   // Run full AI cascade
-  static double cautionDistance  = 150.0;  // Monitor but don't speak
+  static double criticalDistance = 40.0;
+  static double dangerDistance   = 100.0;  // increased from 80
+  static double cautionDistance  = 180.0;  // increased from 150
 
-  // Pipeline timing
-  static int frameIntervalMs   = 500;   // Capture frame every 500ms
-  static int geminiTimeoutSecs = 6;     // Gemini API timeout
+  // Pipeline timing — slowed down significantly
+  static int frameIntervalMs    = 2500;  // was 500ms — now 2.5 seconds
+  static int geminiTimeoutSecs  = 8;     // was 6
+
+  // TTS cooldowns (ms)
+  static const int ttsSameCueCooldownMs     = 4000;  // don't repeat same cue within 4s
+  static const int ttsAnyCueCooldownMs      = 2000;  // minimum gap between any cues
+  static const int ttsSceneDescCooldownMs   = 1200;  // delay before scene desc plays
+
+  // Importance ranking thresholds
+  static const int importanceHighMs    = 0;     // speak immediately
+  static const int importanceMediumMs  = 500;   // slight delay
+  static const int importanceLowMs     = 1200;  // longer delay
 
   // Arduino serial
   static const int arduinoBaudRate = 9600;
 
-  // Scene description trigger thresholds
-  static const double sceneDescProximityThreshold = 120.0; // cm
-  static const double sceneDescAmbiguousLow       = 0.35;  // gate confidence
-  static const double sceneDescAmbiguousHigh      = 0.65;  // gate confidence
-  static const int sceneDescStationarySeconds     = 4;     // seconds to detect stationary
-  static const int sceneDescPeriodicSeconds       = 20;    // seconds between ambient calls
+  // Velocity tracking
+  static const int velocityHistoryCount   = 5;    // frames to track for velocity
+  static const double movingVelocityThreshold = 15.0; // cm/s to count as moving
 
-  // Whether API key has been configured
+  // Scene description triggers
+  static const double sceneDescProximityThreshold  = 150.0;
+  static const double sceneDescAmbiguousLow        = 0.35;
+  static const double sceneDescAmbiguousHigh       = 0.65;
+  static const int    sceneDescStationarySeconds   = 5;
+  static const int    sceneDescPeriodicSeconds     = 25;
+  static const int    sceneDescMinGapSeconds       = 5;
+  static const int    sceneDescCrowdedMinGap       = 18;
+  static const int    sceneDescComplexMinGap       = 30;
+
+  // Complex scene description triggers
+  static const double complexSceneMultiObstacleCount = 2;
+  static const int    complexSceneNarrowCm           = 80;
+
   static bool get isApiKeySet =>
       geminiApiKey.isNotEmpty && geminiApiKey != 'YOUR_GEMINI_API_KEY_HERE';
 }
+
