@@ -13,7 +13,6 @@ class CascadeEngine {
   final SceneDescriptionService _sceneDesc = SceneDescriptionService();
   final VelocityTracker         _velocity  = VelocityTracker();
 
-  // ── Frame counters ────────────────────────────────────────────────────
   int totalFrames      = 0;
   int gateCalledCount  = 0;
   int gateYesCount     = 0;
@@ -22,13 +21,11 @@ class CascadeEngine {
   int sensorOnlyCount  = 0;
   int apiErrorCount    = 0;
 
-  // ── Importance ranking counters ───────────────────────────────────────
   int criticalCueCount = 0;
   int highCueCount     = 0;
   int mediumCueCount   = 0;
   int lowCueCount      = 0;
 
-  // ── Object type counters ──────────────────────────────────────────────
   int personCount      = 0;
   int furnitureCount   = 0;
   int doorCount        = 0;
@@ -36,20 +33,21 @@ class CascadeEngine {
   int petCount         = 0;
   int otherCount       = 0;
 
-  // ── Velocity counters ─────────────────────────────────────────────────
-  int movingObjectCount    = 0;
-  int approachingCount     = 0;
-  int recedingCount        = 0;
+  int movingObjectCount = 0;
+  int approachingCount  = 0;
+  int recedingCount     = 0;
 
-  // ── Latency tracking ─────────────────────────────────────────────────
   final List<int> _gateLatencies     = [];
   final List<int> _classifyLatencies = [];
 
-  // ── State ─────────────────────────────────────────────────────────────
   SensorData?      lastSensors;
   GateResult?      lastGate;
   DetectionResult? lastDetection;
   NavCue?          lastCue;
+
+  DateTime? _lastDetectionTimestamp;
+  DateTime  _lastCriticalClassifyAttempt =
+      DateTime.fromMillisecondsSinceEpoch(0);
 
   CascadeEngine({required TtsService tts}) : _tts = tts;
 
@@ -58,30 +56,38 @@ class CascadeEngine {
     lastSensors = sensors;
     totalFrames++;
 
-    // Update velocity tracker every frame
     _velocity.add(sensors);
 
-    // ── SAFETY LAYER — always first, no AI ───────────────────────────
+    // ── SAFETY LAYER — always first, no AI, but no longer mute ────────
     if (sensors.isCritical) {
       safetyCount++;
       criticalCueCount++;
 
+      final objectName = _recentObjectNameOrNull();
+      final dist = sensors.center.round();
       String safetyText;
-      if (_velocity.isApproaching) {
-        safetyText = 'Stop! Something is approaching fast, '
-                     '${sensors.center.round()} centimetres ahead.';
+      if (objectName != null) {
+        safetyText = _velocity.isApproaching
+            ? 'Stop! A $objectName is approaching, $dist centimetres ahead.'
+            : 'Stop! A $objectName is $dist centimetres directly ahead.';
       } else {
-        safetyText = 'Stop! Obstacle ${sensors.center.round()} '
-                     'centimetres directly ahead.';
+        safetyText = _velocity.isApproaching
+            ? 'Stop! Something is approaching fast, $dist centimetres ahead.'
+            : 'Stop! Obstacle $dist centimetres directly ahead.';
       }
 
-      await _tts.speakUrgent(safetyText);
+      await _tts.speakUrgent(safetyText, cueKey: 'critical_stop');
+
+      // Find out what it is in the background — doesn't block or
+      // interrupt the stop message, just enriches the *next* one.
+      _maybeClassifyInBackground(frameBytes);
+
       sw.stop();
       final cue = NavCue(
         text:           safetyText,
         source:         CueSource.safety,
         direction:      'stop',
-        obstacleLabel:  'obstacle',
+        obstacleLabel:  objectName ?? 'obstacle',
         environment:    EnvironmentInfo.empty(),
         urgency:        'critical',
         timestamp:      DateTime.now(),
@@ -97,7 +103,8 @@ class CascadeEngine {
       final cue = _buildSensorCue(sensors, sw.elapsedMilliseconds);
       lastCue = cue;
       if (sensors.isCaution) {
-        await _tts.speak(cue.text, priority: TtsPriority.medium);
+        await _tts.speak(cue.text,
+            priority: TtsPriority.medium, cueKey: _sensorCueKey(sensors));
       }
       return cue;
     }
@@ -114,7 +121,8 @@ class CascadeEngine {
       final cue = _buildSensorCue(sensors, sw.elapsedMilliseconds);
       lastCue = cue;
       if (sensors.isCaution) {
-        await _tts.speak(cue.text, priority: TtsPriority.low);
+        await _tts.speak(cue.text,
+            priority: TtsPriority.low, cueKey: _sensorCueKey(sensors));
       }
       _checkAndFireSceneDescription(sensors, frameBytes);
       return cue;
@@ -125,7 +133,8 @@ class CascadeEngine {
     // ── STAGE 2: CLASSIFY ─────────────────────────────────────────────
     classifyCount++;
     final detection = await _gemini.classify(frameBytes);
-    lastDetection   = detection;
+    lastDetection           = detection;
+    _lastDetectionTimestamp = DateTime.now();
     _classifyLatencies.add(detection.latencyMs);
     if (_classifyLatencies.length > 50) _classifyLatencies.removeAt(0);
     sw.stop();
@@ -134,25 +143,22 @@ class CascadeEngine {
       apiErrorCount++;
       final cue = _buildSensorCue(sensors, sw.elapsedMilliseconds);
       lastCue = cue;
-      await _tts.speak(cue.text, priority: TtsPriority.medium);
+      await _tts.speak(cue.text,
+          priority: TtsPriority.medium, cueKey: _sensorCueKey(sensors));
       return cue;
     }
 
-    // Update object type counters
     _updateObjectCounters(detection.label);
 
-    // Update velocity counters
     if (_velocity.isMoving) movingObjectCount++;
     if (_velocity.isApproaching) approachingCount++;
     if (_velocity.isReceding) recedingCount++;
 
-    // Build rich cue with importance ranking
     final priority = _importancePriority(detection, sensors);
-    final cue      = _buildRichCue(
+    final cue = _buildRichCue(
         detection, sensors, sw.elapsedMilliseconds, priority);
     lastCue = cue;
 
-    // Update importance counters
     switch (priority) {
       case TtsPriority.critical: criticalCueCount++; break;
       case TtsPriority.high:     highCueCount++;     break;
@@ -160,25 +166,82 @@ class CascadeEngine {
       case TtsPriority.low:      lowCueCount++;      break;
     }
 
-    await _tts.speak(cue.text, priority: priority);
+    await _tts.speak(cue.text,
+        priority: priority, cueKey: _richCueKey(detection, sensors));
     _checkAndFireSceneDescription(sensors, frameBytes);
 
     return cue;
   }
 
-  /// Rank importance of detected obstacle to prioritise TTS.
+  /// Fires a one-off classify call while critical, so the obstacle gets
+  /// named on a future "Stop!" cue. Throttled so it doesn't spam Gemini
+  /// every single frame while the person is standing still in danger.
+  void _maybeClassifyInBackground(Uint8List? frameBytes) {
+    if (frameBytes == null || !AppConfig.isApiKeySet) return;
+    final now = DateTime.now();
+    if (now.difference(_lastCriticalClassifyAttempt).inSeconds < 3) return;
+    _lastCriticalClassifyAttempt = now;
+
+    _gemini.classify(frameBytes).then((det) {
+      if (det.success) {
+        lastDetection           = det;
+        _lastDetectionTimestamp = DateTime.now();
+        classifyCount++;
+        _updateObjectCounters(det.label);
+
+        final name = det.specifics.isNotEmpty
+            ? det.specifics
+            : _labelText(det.label);
+
+        // Low priority = queues quietly, never interrupts the stop cue.
+        _tts.speak('That is a $name.',
+            priority: TtsPriority.low,
+            cueKey: 'critical_object_name_$name');
+      } else {
+        apiErrorCount++;
+      }
+    }).catchError((_) {
+      apiErrorCount++;
+    });
+  }
+
+  String? _recentObjectNameOrNull() {
+    if (lastDetection == null || !lastDetection!.success) return null;
+    if (_lastDetectionTimestamp == null) return null;
+    if (DateTime.now().difference(_lastDetectionTimestamp!).inSeconds > 6) {
+      return null; // stale — don't misreport an old object
+    }
+    if (lastDetection!.label == ObstacleLabel.unknown ||
+        lastDetection!.label == ObstacleLabel.clear) return null;
+
+    return lastDetection!.specifics.isNotEmpty
+        ? lastDetection!.specifics
+        : _labelText(lastDetection!.label);
+  }
+
+  String _distanceBucket(double cm) {
+    if (cm < 40)  return 'b0';
+    if (cm < 80)  return 'b1';
+    if (cm < 120) return 'b2';
+    if (cm < 180) return 'b3';
+    return 'b4';
+  }
+
+  String _sensorCueKey(SensorData s) =>
+      'sensor_${s.closestDirection}_${_distanceBucket(s.center)}';
+
+  String _richCueKey(DetectionResult det, SensorData sensors) =>
+      'gemini_${det.label.name}_${det.position.name}_'
+      '${_distanceBucket(sensors.center)}';
+
   TtsPriority _importancePriority(
       DetectionResult det, SensorData sensors) {
-
-    // Critical — stairs down or very close moving person
     if (det.label == ObstacleLabel.stairs_down ||
         det.label == ObstacleLabel.step_down) {
       return TtsPriority.critical;
     }
-
     if (det.urgency == 'critical') return TtsPriority.critical;
 
-    // High — approaching person/pet, close obstacle, open stairs
     if (_velocity.isApproaching &&
         (det.label == ObstacleLabel.person ||
          det.label == ObstacleLabel.animal ||
@@ -194,7 +257,6 @@ class CascadeEngine {
       return TtsPriority.high;
     }
 
-    // Medium — furniture, doors, narrow passages
     if (det.label == ObstacleLabel.door_open   ||
         det.label == ObstacleLabel.door_closed  ||
         det.label == ObstacleLabel.chair        ||
@@ -204,7 +266,6 @@ class CascadeEngine {
       return TtsPriority.medium;
     }
 
-    // Low — peripheral, far, or already described
     if (det.distanceEstimate == 'far' || det.distanceEstimate == 'ahead') {
       return TtsPriority.low;
     }
@@ -218,14 +279,11 @@ class CascadeEngine {
       int latencyMs,
       TtsPriority priority) {
 
-    // Use Gemini's navigation_instruction if it's good
     String cueText = det.navigationInstruction;
-
     if (cueText.isEmpty || cueText == 'null') {
       cueText = _buildInstructionFromData(det, sensors);
     }
 
-    // Prepend urgency prefix
     if (det.urgency == 'critical') {
       cueText = 'Warning. $cueText';
     } else if (_velocity.isApproaching &&
@@ -235,10 +293,8 @@ class CascadeEngine {
       cueText = 'Caution — ${_velocity.approachDescription}. $cueText';
     }
 
-    // Add sensor distance for close obstacles
     if (sensors.center < AppConfig.dangerDistance) {
-      final dist = sensors.center.round();
-      cueText = '$cueText ($dist cm)';
+      cueText = '$cueText (${sensors.center.round()} cm)';
     }
 
     return NavCue(
@@ -261,7 +317,6 @@ class CascadeEngine {
     final distance  = det.distanceEstimate;
     final direction = _safeDirectionFromSensors(sensors);
 
-    // Moving person/animal — use velocity
     if ((det.label == ObstacleLabel.person  ||
          det.label == ObstacleLabel.child   ||
          det.label == ObstacleLabel.animal) &&
@@ -276,7 +331,6 @@ class CascadeEngine {
       }
     }
 
-    // Stairs — always specific and directional
     if (det.label == ObstacleLabel.stairs_down ||
         det.label == ObstacleLabel.step_down) {
       return 'Stairs going down $position, $distance. '
@@ -287,8 +341,6 @@ class CascadeEngine {
       return 'Stairs going up $position, $distance. '
              'Approach carefully and find the handrail.';
     }
-
-    // Doors
     if (det.label == ObstacleLabel.door_open) {
       return 'Open door $position, $distance. You can pass through.';
     }
@@ -300,25 +352,17 @@ class CascadeEngine {
       return 'Glass door $position, $distance. '
              'Proceed carefully — it may be hard to see.';
     }
-
-    // Wet floor
     if (det.label == ObstacleLabel.wet_floor) {
       return 'Wet floor $position. Walk carefully to avoid slipping.';
     }
-
-    // Narrow passage
     if (det.label == ObstacleLabel.narrow_passage) {
       return 'Narrow passage $position. '
              'Move to the centre and proceed slowly.';
     }
-
-    // Group of people
     if (det.label == ObstacleLabel.group_of_people) {
       return 'Group of people $distance $position. '
              '$direction to go around them.';
     }
-
-    // Furniture
     if (det.label == ObstacleLabel.chair ||
         det.label == ObstacleLabel.table ||
         det.label == ObstacleLabel.sofa  ||
@@ -337,7 +381,7 @@ class CascadeEngine {
     final dist = sensors.center.round();
 
     if (sensors.center < 40) {
-      text      = 'Stop immediately. Something is ${dist} centimetres '
+      text      = 'Stop immediately. Something is $dist centimetres '
                   'directly in front of you.';
       direction = 'stop';
       priority  = TtsPriority.critical;
@@ -346,7 +390,7 @@ class CascadeEngine {
       final velNote = _velocity.isApproaching
           ? ' It appears to be approaching.'
           : '';
-      text     = 'Obstacle ${dist} centimetres ahead.$velNote $direction.';
+      text     = 'Obstacle $dist centimetres ahead.$velNote $direction.';
       priority = TtsPriority.high;
     } else if (sensors.left < 60) {
       direction = 'move right';
@@ -372,7 +416,6 @@ class CascadeEngine {
       priority  = TtsPriority.low;
     }
 
-    // Track importance
     switch (priority) {
       case TtsPriority.critical: criticalCueCount++; break;
       case TtsPriority.high:     highCueCount++;     break;
@@ -406,7 +449,9 @@ class CascadeEngine {
         if (description != null && description.isNotEmpty) {
           Future.delayed(
             Duration(milliseconds: AppConfig.ttsSceneDescCooldownMs),
-            () => _tts.speak(description, priority: TtsPriority.low),
+            () => _tts.speak(description,
+                priority: TtsPriority.low,
+                cueKey: 'scene_$triggerReason'),
           );
         }
       });
@@ -512,12 +557,8 @@ class CascadeEngine {
     return m[pos] ?? 'ahead';
   }
 
-  // ── Stats ─────────────────────────────────────────────────────────────
-
   double get apiSavingPercent =>
-      totalFrames > 0
-          ? (1.0 - classifyCount / totalFrames) * 100.0
-          : 0.0;
+      totalFrames > 0 ? (1.0 - classifyCount / totalFrames) * 100.0 : 0.0;
 
   double get gateTriggerPercent =>
       totalFrames > 0 ? gateYesCount / totalFrames * 100.0 : 0.0;
@@ -536,17 +577,17 @@ class CascadeEngine {
   String get lastSceneDescription => _sceneDesc.lastDescription;
 
   Map<String, dynamic> toStats() => {
-    'total_frames':          totalFrames,
-    'gate_called':           gateCalledCount,
-    'gate_yes':              gateYesCount,
-    'classify_called':       classifyCount,
-    'sensor_only':           sensorOnlyCount,
-    'safety_overrides':      safetyCount,
-    'api_errors':            apiErrorCount,
-    'api_saving_percent':    apiSavingPercent.toStringAsFixed(1),
-    'gate_trigger_percent':  gateTriggerPercent.toStringAsFixed(1),
-    'avg_gate_latency_ms':   avgGateLatencyMs,
-    'avg_classify_latency_ms': avgClassifyLatencyMs,
+    'total_frames':            totalFrames,
+    'gate_called':              gateCalledCount,
+    'gate_yes':                 gateYesCount,
+    'classify_called':          classifyCount,
+    'sensor_only':              sensorOnlyCount,
+    'safety_overrides':         safetyCount,
+    'api_errors':               apiErrorCount,
+    'api_saving_percent':       apiSavingPercent.toStringAsFixed(1),
+    'gate_trigger_percent':     gateTriggerPercent.toStringAsFixed(1),
+    'avg_gate_latency_ms':      avgGateLatencyMs,
+    'avg_classify_latency_ms':  avgClassifyLatencyMs,
     'importance': {
       'critical': criticalCueCount,
       'high':     highCueCount,
@@ -562,12 +603,10 @@ class CascadeEngine {
       'other':     otherCount,
     },
     'velocity': {
-      'moving':     movingObjectCount,
+      'moving':      movingObjectCount,
       'approaching': approachingCount,
-      'receding':   recedingCount,
+      'receding':    recedingCount,
     },
     'tts': _tts.stats,
   };
 }
-
-
