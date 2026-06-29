@@ -1,9 +1,9 @@
 import '../config.dart';
 
 class SensorData {
-  final double left;
-  final double center;
-  final double right;
+  final double   left;
+  final double   center;
+  final double   right;
   final DateTime timestamp;
 
   const SensorData({
@@ -43,8 +43,8 @@ class SensorData {
   }
 
   String get safeDirection {
-    if (left > right + 30) return 'move left';
-    if (right > left + 30) return 'move right';
+    if (left > right + 30)  return 'move left';
+    if (right > left + 30)  return 'move right';
     if (center < AppConfig.dangerDistance) return 'stop and wait';
     return 'proceed with caution';
   }
@@ -67,59 +67,111 @@ class SensorData {
   double get rightBar  => barValue(right);
 }
 
-/// Tracks velocity of obstacles using rolling history of SensorData.
-/// Used to detect moving people/pets and estimate approach speed.
+/// Tracks whether an external obstacle is moving toward the wearer.
+///
+/// THE CORE PROBLEM THIS SOLVES:
+/// When the wearer walks forward, ALL three sensors decrease together.
+/// When an obstacle approaches the wearer while they stand still,
+/// only the relevant sensor(s) decrease.
+///
+/// FIX: We look for cases where center decreases FASTER than
+/// left+right average, indicating something coming AT the person
+/// rather than the person walking INTO something.
+/// We also require CONSISTENCY across multiple frames to avoid
+/// noise from a single bumpy step triggering a false alarm.
 class VelocityTracker {
   final List<SensorData> _history = [];
   final int maxHistory;
 
-  VelocityTracker({this.maxHistory = 5});
+  // How many consecutive frames must agree before we declare approach
+  static const int _confirmFrames = 3;
+
+  VelocityTracker({this.maxHistory = 8});
 
   void add(SensorData data) {
     _history.add(data);
     if (_history.length > maxHistory) _history.removeAt(0);
   }
 
-  /// cm/s — positive means obstacle getting closer, negative means moving away
-  double get centerVelocity {
+  /// Raw cm/s of center sensor change.
+  /// Positive = distance decreasing = something getting closer.
+  double get rawCenterVelocity {
     if (_history.length < 2) return 0.0;
     final oldest = _history.first;
     final newest = _history.last;
-    final dt = newest.timestamp.difference(oldest.timestamp).inMilliseconds;
+    final dt = newest.timestamp
+        .difference(oldest.timestamp)
+        .inMilliseconds;
     if (dt <= 0) return 0.0;
-    // Positive = obstacle approaching (distance decreasing)
     return (oldest.center - newest.center) / (dt / 1000.0);
   }
 
-  double get leftVelocity {
+  /// Differential velocity: how much faster center is closing
+  /// compared to the average of left+right.
+  /// Filters out the wearer's own forward motion.
+  double get differentialVelocity {
     if (_history.length < 2) return 0.0;
     final oldest = _history.first;
     final newest = _history.last;
-    final dt = newest.timestamp.difference(oldest.timestamp).inMilliseconds;
+    final dt = newest.timestamp
+        .difference(oldest.timestamp)
+        .inMilliseconds;
     if (dt <= 0) return 0.0;
-    return (oldest.left - newest.left) / (dt / 1000.0);
+
+    final centerChange =
+        (oldest.center - newest.center) / (dt / 1000.0);
+    final leftChange   =
+        (oldest.left   - newest.left)   / (dt / 1000.0);
+    final rightChange  =
+        (oldest.right  - newest.right)  / (dt / 1000.0);
+
+    // Average side change represents the wearer moving forward
+    final sideAvg = (leftChange + rightChange) / 2.0;
+
+    // Differential: how much more the center is closing vs sides
+    // If wearer walks forward, centerChange ≈ sideAvg → differential ≈ 0
+    // If object approaches, centerChange >> sideAvg → differential > 0
+    return centerChange - sideAvg;
   }
 
-  double get rightVelocity {
-    if (_history.length < 2) return 0.0;
-    final oldest = _history.first;
-    final newest = _history.last;
-    final dt = newest.timestamp.difference(oldest.timestamp).inMilliseconds;
-    if (dt <= 0) return 0.0;
-    return (oldest.right - newest.right) / (dt / 1000.0);
+  /// True only if the differential velocity has been consistently
+  /// above threshold for multiple frames — rules out single-step noise.
+  bool get isApproaching {
+    if (_history.length < _confirmFrames + 1) return false;
+
+    // Check that the last N consecutive frame pairs all show approach
+    int confirmedFrames = 0;
+    for (int i = _history.length - _confirmFrames;
+         i < _history.length;
+         i++) {
+      final prev = _history[i - 1];
+      final curr = _history[i];
+      final dt   = curr.timestamp
+          .difference(prev.timestamp)
+          .inMilliseconds;
+      if (dt <= 0) continue;
+
+      final cV = (prev.center - curr.center) / (dt / 1000.0);
+      final lV = (prev.left   - curr.left)   / (dt / 1000.0);
+      final rV = (prev.right  - curr.right)  / (dt / 1000.0);
+      final diff = cV - (lV + rV) / 2.0;
+
+      if (diff > AppConfig.movingVelocityThreshold) confirmedFrames++;
+    }
+
+    return confirmedFrames >= _confirmFrames - 1;
   }
 
-  bool get isApproaching =>
-      centerVelocity > AppConfig.movingVelocityThreshold;
-
-  bool get isReceding =>
-      centerVelocity < -AppConfig.movingVelocityThreshold;
+  bool get isReceding {
+    if (_history.length < 2) return false;
+    return differentialVelocity < -AppConfig.movingVelocityThreshold;
+  }
 
   bool get isMoving =>
-      centerVelocity.abs() > AppConfig.movingVelocityThreshold;
+      differentialVelocity.abs() > AppConfig.movingVelocityThreshold;
 
   String get approachDescription {
-    final v = centerVelocity;
+    final v = differentialVelocity;
     if (v > 60)  return 'moving toward you quickly';
     if (v > 25)  return 'moving toward you';
     if (v > 10)  return 'moving slowly toward you';
@@ -128,7 +180,9 @@ class VelocityTracker {
     return 'stationary';
   }
 
+  // For debug display
+  double get debugDifferential => differentialVelocity;
+  double get debugRaw          => rawCenterVelocity;
+
   void clear() => _history.clear();
 }
-
-
