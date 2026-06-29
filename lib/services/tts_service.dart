@@ -6,9 +6,8 @@ enum TtsPriority { critical, high, medium, low }
 class _TtsQueueItem {
   final String      text;
   final TtsPriority priority;
-  final int         delayMs;
   final String      cueKey;
-  _TtsQueueItem(this.text, this.priority, this.delayMs, this.cueKey);
+  _TtsQueueItem(this.text, this.priority, this.cueKey);
 }
 
 class TtsService {
@@ -20,6 +19,7 @@ class TtsService {
   String?       _lastCueKey;
   DateTime      _lastSpokeForKey = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime      _lastSpokeAny    = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime      _lastFinished    = DateTime.fromMillisecondsSinceEpoch(0);
 
   int totalSpoken       = 0;
   int duplicatesSkipped = 0;
@@ -34,15 +34,22 @@ class TtsService {
 
   Future<void> init() async {
     await _tts.setLanguage('en-US');
-    await _tts.setSpeechRate(0.44);
+    await _tts.setSpeechRate(0.42);   // slightly slower for clarity
     await _tts.setVolume(1.0);
     await _tts.setPitch(1.0);
+    // CRITICAL: must be false so completion handler fires
     await _tts.awaitSpeakCompletion(false);
 
     _tts.setCompletionHandler(() {
       _speaking        = false;
       _currentPriority = null;
-      _processQueue();
+      _lastFinished    = DateTime.now();
+      // Small gap between sentences so they don't blur together
+      Future.delayed(const Duration(milliseconds: 300), _processQueue);
+    });
+
+    _tts.setStartHandler(() {
+      _speaking = true;
     });
 
     _ready = true;
@@ -54,15 +61,34 @@ class TtsService {
     String?     cueKey,
   }) async {
     if (!_ready) await init();
+    if (text.trim().isEmpty) return;
+
     final key = cueKey ?? text;
     final now = DateTime.now();
 
-    final minGapMs = _minGapForPriority(priority);
-    if (now.difference(_lastSpokeAny).inMilliseconds < minGapMs) {
+    // Don't interrupt if something of equal or higher priority is playing
+    final outranksCurrent = _currentPriority == null ||
+        priority.index < _currentPriority!.index;
+
+    // Minimum gap after ANY utterance finishes, scaled by priority
+    final msSinceFinished = now.difference(_lastFinished).inMilliseconds;
+    final minGapAfterSpeech = _minGapAfterSpeech(priority);
+    if (!_speaking && msSinceFinished < minGapAfterSpeech) {
+      // Still in cooldown after last utterance
       cooldownSkipped++;
       return;
     }
 
+    // Minimum gap between ANY two cue submissions
+    final minGapMs = _minGapForPriority(priority);
+    if (now.difference(_lastSpokeAny).inMilliseconds < minGapMs) {
+      if (priority != TtsPriority.critical && priority != TtsPriority.high) {
+        cooldownSkipped++;
+        return;
+      }
+    }
+
+    // Same cue key recently — skip duplicate
     if (key == _lastCueKey &&
         now.difference(_lastSpokeForKey).inMilliseconds 
             AppConfig.ttsSameCueCooldownMs) {
@@ -70,33 +96,26 @@ class TtsService {
       return;
     }
 
-    final outranksCurrent = _currentPriority == null ||
-        priority.index < _currentPriority!.index;
-
     if (_speaking && !outranksCurrent) {
+      // Queue it but drop lower-priority items already waiting
       _queue.removeWhere((item) =>
-          item.priority == TtsPriority.low ||
-          item.priority == TtsPriority.medium);
-      _queue.add(_TtsQueueItem(text, priority, 0, key));
+          item.priority.index >= priority.index &&
+          item.priority != TtsPriority.critical);
+      _queue.add(_TtsQueueItem(text, priority, key));
       _queue.sort((a, b) => a.priority.index.compareTo(b.priority.index));
       return;
     }
 
     if (_speaking && outranksCurrent) {
+      // Higher priority — interrupt current speech
       interruptedCount++;
       _queue.clear();
       await _tts.stop();
-      _speaking = false;
+      _speaking        = false;
+      _currentPriority = null;
     }
 
-    final delayMs = switch (priority) {
-      TtsPriority.critical => AppConfig.importanceHighMs,
-      TtsPriority.high     => AppConfig.importanceHighMs,
-      TtsPriority.medium   => AppConfig.importanceMediumMs,
-      TtsPriority.low      => AppConfig.importanceLowMs,
-    };
-
-    _queue.add(_TtsQueueItem(text, priority, delayMs, key));
+    _queue.add(_TtsQueueItem(text, priority, key));
     _queue.sort((a, b) => a.priority.index.compareTo(b.priority.index));
 
     if (!_speaking) _processQueue();
@@ -105,9 +124,18 @@ class TtsService {
   int _minGapForPriority(TtsPriority p) {
     switch (p) {
       case TtsPriority.critical: return 0;
-      case TtsPriority.high:     return 1200;
+      case TtsPriority.high:     return 800;
       case TtsPriority.medium:   return AppConfig.ttsAnyCueCooldownMs;
       case TtsPriority.low:      return AppConfig.ttsAnyCueCooldownMs;
+    }
+  }
+
+  int _minGapAfterSpeech(TtsPriority p) {
+    switch (p) {
+      case TtsPriority.critical: return 0;
+      case TtsPriority.high:     return 400;
+      case TtsPriority.medium:   return 800;
+      case TtsPriority.low:      return 1500;
     }
   }
 
@@ -122,10 +150,6 @@ class TtsService {
     _lastSpokeAny    = DateTime.now();
     totalSpoken++;
 
-    if (item.delayMs > 0) {
-      await Future.delayed(Duration(milliseconds: item.delayMs));
-    }
-
     await _tts.speak(item.text);
   }
 
@@ -134,10 +158,10 @@ class TtsService {
     String cueKey = 'critical_stop',
   }) async {
     if (!_ready) await init();
+    if (text.trim().isEmpty) return;
 
-    if (_speaking && _currentPriority == TtsPriority.critical) {
-      return;
-    }
+    // Don't cut off an already-playing critical message
+    if (_speaking && _currentPriority == TtsPriority.critical) return;
 
     _queue.clear();
     urgentSpoken++;
