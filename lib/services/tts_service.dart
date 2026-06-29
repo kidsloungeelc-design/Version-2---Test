@@ -90,7 +90,7 @@ class TtsService {
 
     // Same cue key recently — skip duplicate
     if (key == _lastCueKey &&
-        now.difference(_lastSpokeForKey).inMilliseconds 
+        now.difference(_lastSpokeForKey).inMilliseconds <
             AppConfig.ttsSameCueCooldownMs) {
       duplicatesSkipped++;
       return;
