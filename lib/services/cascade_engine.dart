@@ -574,6 +574,7 @@ class CascadeEngine {
               _classifyLatencies.length).round();
 
   SceneDescriptionService get sceneDescService => _sceneDesc;
+  GeminiService get gemini => _gemini;
   String get lastSceneDescription => _sceneDesc.lastDescription;
 
   Map<String, dynamic> toStats() => {
